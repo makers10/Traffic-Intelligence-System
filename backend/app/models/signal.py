@@ -16,3 +16,6 @@ class SignalPlan(Base):
     cycle_time_s = Column(Integer)        # total cycle
     phases = Column(JSON)                 # per-direction phase breakdown
     reason = Column(String)               # human-readable explanation
+    applied_at = Column(DateTime(timezone=True))   # when operator applied it
+    post_congestion_level = Column(Float)          # measured congestion after applying
+    effectiveness_score = Column(Float)            # post vs pre improvement
