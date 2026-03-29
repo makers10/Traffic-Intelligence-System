@@ -7,33 +7,24 @@ export default function LiveIndicator({ junctionId }: Props) {
   const { update, connected } = useTrafficSocket(junctionId);
 
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0" }}>
-      {/* Connection dot */}
-      <span style={{
-        width: 8, height: 8, borderRadius: "50%",
-        background: connected ? "#4ade80" : "#64748b",
-        display: "inline-block",
-        boxShadow: connected ? "0 0 6px #4ade80" : "none",
-      }} />
-      <span style={{ fontSize: 12, color: connected ? "#4ade80" : "#64748b" }}>
-        {connected ? "LIVE" : "disconnected"}
+    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <span className={`live-dot ${connected ? "on" : "off"}`} />
+      <span style={{ fontSize: 11, fontWeight: 600, color: connected ? "#86efac" : "#94a3b8" }}>
+        {connected ? "LIVE" : "offline"}
       </span>
-
-      {update?.prediction && (
-        <>
-          <span style={{ fontSize: 12, color: "#64748b", marginLeft: 8 }}>
-            {formatDistanceToNow(new Date(update.timestamp), { addSuffix: true })}
-          </span>
-          {update.active_alerts > 0 && (
-            <span style={{
-              marginLeft: "auto", fontSize: 11, fontWeight: 600,
-              color: "#f87171", background: "#450a0a",
-              padding: "2px 8px", borderRadius: 12,
-            }}>
-              🚨 {update.active_alerts} alert{update.active_alerts > 1 ? "s" : ""}
-            </span>
-          )}
-        </>
+      {update?.timestamp && (
+        <span style={{ fontSize: 11, color: "#90b4d4" }}>
+          · {formatDistanceToNow(new Date(update.timestamp), { addSuffix: true })}
+        </span>
+      )}
+      {update && update.active_alerts > 0 && (
+        <span style={{
+          fontSize: 11, fontWeight: 700,
+          color: "#fca5a5", background: "rgba(239,68,68,0.2)",
+          padding: "2px 8px", borderRadius: 10,
+        }}>
+          {update.active_alerts} alert{update.active_alerts > 1 ? "s" : ""}
+        </span>
       )}
     </div>
   );
