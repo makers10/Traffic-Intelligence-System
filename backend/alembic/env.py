@@ -1,7 +1,7 @@
 import os
 from logging.config import fileConfig
 from sqlalchemy import engine_from_config, pool
-from alembic import context
+from alembic import context  # type: ignore[attr-defined]
 
 # Import all models so Alembic can detect them
 from app.db import Base
