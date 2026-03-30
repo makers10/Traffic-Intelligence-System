@@ -39,7 +39,7 @@ export default function TrafficMap({ junctions, congestionMap, selectedId, onSel
       zoomControl={true}
     >
       <TileLayer
-        url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
+        url="https://{s}.basemaps.cartocdn.com/dark_matter_nolabels/{z}/{x}/{y}{r}.png"
         attribution='&copy; <a href="https://carto.com/">CARTO</a>'
       />
       <PanToSelected junctions={junctions} selectedId={selectedId} />
