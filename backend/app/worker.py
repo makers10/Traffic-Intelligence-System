@@ -25,44 +25,39 @@ celery_app.conf.timezone = "UTC"
 
 @celery_app.task(name="app.worker.retrain_all_models")
 def retrain_all_models():
-    from app.db import SessionLocal
+    from app.db import db_session
     from app.ml.trainer import train_all_junctions
-    db = SessionLocal()
-    try:
-        results = train_all_junctions(db)
-        return results
-    finally:
-        db.close()
+    with db_session() as db:
+        return train_all_junctions(db)
 
 
 @celery_app.task(name="app.worker.retrain_junction_model")
 def retrain_junction_model(junction_id: str, days: int = 30):
-    from app.db import SessionLocal
+    from app.db import db_session
     from app.ml.trainer import train_junction_model
-    db = SessionLocal()
-    try:
+    with db_session() as db:
         return train_junction_model(db, junction_id, days)
-    finally:
-        db.close()
 
 
 @celery_app.task(name="app.worker.refresh_all_predictions")
 def refresh_all_predictions():
-    from app.db import SessionLocal
+    from app.db import db_session
     from app.models.traffic import TrafficReading
     from app.services.fusion_service import fused_prediction
-    db = SessionLocal()
-    try:
+
+    with db_session() as db:
         junction_ids = [
             row[0] for row in db.query(TrafficReading.junction_id).distinct().all()
         ]
-        results = []
-        for jid in junction_ids:
-            try:
+
+    # Process each junction with its own session so a failure in one
+    # junction doesn't roll back or poison the session for the rest.
+    results = []
+    for jid in junction_ids:
+        try:
+            with db_session() as db:
                 result = fused_prediction(db, jid)
                 results.append({"junction_id": jid, "status": "ok", "level": result.get("congestion_level")})
-            except Exception as e:
-                results.append({"junction_id": jid, "status": "error", "error": str(e)})
-        return results
-    finally:
-        db.close()
+        except Exception as e:
+            results.append({"junction_id": jid, "status": "error", "error": str(e)})
+    return results

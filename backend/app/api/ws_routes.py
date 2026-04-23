@@ -5,9 +5,8 @@ Clients subscribe to a junction_id and receive updates every 10 seconds.
 import asyncio
 import json
 from datetime import datetime
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
-from sqlalchemy.orm import Session
-from app.db import get_db
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from app.db import db_session
 from app.services.fusion_service import fused_prediction
 from app.services.traffic_service import get_active_alerts
 
@@ -28,23 +27,31 @@ async def _broadcast(junction_id: str, payload: dict):
 
 
 @router.websocket("/ws/{junction_id}")
-async def traffic_ws(junction_id: str, websocket: WebSocket, db: Session = Depends(get_db)):
+async def traffic_ws(junction_id: str, websocket: WebSocket):
+    """Push live traffic updates every 10 seconds.
+
+    Each update cycle creates a short-lived DB session instead of
+    holding a single session open for the lifetime of the connection.
+    This avoids stale connections, detached instances, and connection
+    pool exhaustion.
+    """
     await websocket.accept()
     _connections.setdefault(junction_id, set()).add(websocket)
     try:
         while True:
-            # Push update every 10 seconds
             try:
-                prediction = fused_prediction(db, junction_id)
-                alerts = get_active_alerts(db, junction_id)
-                payload = {
-                    "type": "update",
-                    "junction_id": junction_id,
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "prediction": prediction,
-                    "active_alerts": len(alerts),
-                    "alert_severity": alerts[0].severity if alerts else None,
-                }
+                # Fresh session per cycle — no stale state across the 10s gap
+                with db_session() as db:
+                    prediction = fused_prediction(db, junction_id)
+                    alerts = get_active_alerts(db, junction_id)
+                    payload = {
+                        "type": "update",
+                        "junction_id": junction_id,
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "prediction": prediction,
+                        "active_alerts": len(alerts),
+                        "alert_severity": alerts[0].severity if alerts else None,
+                    }
             except Exception as e:
                 payload = {"type": "error", "junction_id": junction_id, "message": str(e)}
 

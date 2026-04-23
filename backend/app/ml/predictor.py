@@ -98,6 +98,19 @@ def build_feature_vector(
 # reused across all subsequent requests until explicitly invalidated.
 _cache_lock = threading.Lock()
 
+# Per-junction read/write locks.
+# Multiple predict() calls can read concurrently (shared), but train/save
+# acquires an exclusive write lock that blocks all readers for that junction.
+_junction_locks: dict[str, threading.RLock] = {}
+
+
+def _get_junction_lock(junction_id: str) -> threading.RLock:
+    """Return (or create) a reentrant lock for a specific junction."""
+    with _cache_lock:
+        if junction_id not in _junction_locks:
+            _junction_locks[junction_id] = threading.RLock()
+        return _junction_locks[junction_id]
+
 
 @lru_cache(maxsize=128)
 def _load_model(junction_id: str, _version: int = 0):
@@ -132,43 +145,55 @@ class TrafficPredictor:
 
     Models are loaded via a module-level LRU cache so repeated
     instantiations for the same junction_id do NOT hit the filesystem.
+
+    Concurrency safety:
+    - predict() acquires a shared (reentrant) lock per junction.
+    - save() acquires the same lock exclusively so no reader sees a
+      half-written file.
     """
 
     def __init__(self, junction_id: str):
         self.junction_id = junction_id
         self.model: Optional[GradientBoostingRegressor] = None
         self.scaler = StandardScaler()
+        self._lock = _get_junction_lock(junction_id)
         self._load()
 
     def _model_file(self) -> str:
         return os.path.join(MODEL_PATH, f"{self.junction_id}_model.pkl")
 
     def _load(self):
-        version = _get_version(self.junction_id)
-        saved = _load_model(self.junction_id, version)
-        if saved is not None:
-            self.model = saved["model"]
-            self.scaler = saved["scaler"]
+        with self._lock:
+            version = _get_version(self.junction_id)
+            saved = _load_model(self.junction_id, version)
+            if saved is not None:
+                self.model = saved["model"]
+                self.scaler = saved["scaler"]
 
     def save(self):
-        """Atomically write model to disk and invalidate the cache."""
-        payload = {"model": self.model, "scaler": self.scaler}
-        # Atomic write: write to temp file then replace to avoid corruption
-        # if the process crashes mid-write.
-        fd, tmp_path = tempfile.mkstemp(dir=MODEL_PATH, suffix=".pkl.tmp")
-        try:
-            with os.fdopen(fd, "wb") as f:
-                pickle.dump(payload, f)
-            os.replace(tmp_path, self._model_file())
-        except BaseException:
-            # Clean up temp file on failure
+        """Atomically write model to disk and invalidate the cache.
+
+        Holds the junction lock so concurrent readers block until the
+        new model is fully written and the cache version is bumped.
+        """
+        with self._lock:
+            payload = {"model": self.model, "scaler": self.scaler}
+            # Atomic write: write to temp file then replace to avoid corruption
+            # if the process crashes mid-write.
+            fd, tmp_path = tempfile.mkstemp(dir=MODEL_PATH, suffix=".pkl.tmp")
             try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
-        # Bump version so the LRU cache returns the fresh model next time
-        _bump_version(self.junction_id)
+                with os.fdopen(fd, "wb") as f:
+                    pickle.dump(payload, f)
+                os.replace(tmp_path, self._model_file())
+            except BaseException:
+                # Clean up temp file on failure
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+            # Bump version so the LRU cache returns the fresh model next time
+            _bump_version(self.junction_id)
 
     def train(self, readings: List[dict]):
         """
