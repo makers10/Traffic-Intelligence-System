@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useQueries } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import TrafficMap from "./components/TrafficMap";
 import TISIcon from "./components/TISIcon";
 import MobileNav from "./components/MobileNav";
@@ -12,7 +12,7 @@ import SummaryStats from "./components/SummaryStats";
 import TransportPanel from "./components/TransportPanel";
 import LiveIndicator from "./components/LiveIndicator";
 import { JUNCTIONS } from "./data/junctions";
-import { fetchFusedPredict } from "./api/client";
+import { fetchBulkCongestion } from "./api/client";
 
 type ChartTab = "trend" | "peak";
 type MobileTab = "map" | "route" | "forecast" | "alerts" | "stats";
@@ -26,19 +26,20 @@ export default function App() {
   const selectedId = fromId;
   const selectedJunction = JUNCTIONS.find(j => j.id === selectedId)!;
 
-  const congestionQueries = useQueries({
-    queries: JUNCTIONS.map(j => ({
-      queryKey: ["fused-predict-map", j.id],
-      queryFn: () => fetchFusedPredict(j.id),
-      retry: false,
-    })),
+  // Single request for all junction congestion levels (replaces N individual calls)
+  const { data: bulkData } = useQuery({
+    queryKey: ["bulk-congestion"],
+    queryFn: fetchBulkCongestion,
+    refetchInterval: 60_000, // refresh every 60s instead of on every render
+    retry: false,
   });
 
   const congestionMap: Record<string, number> = {};
-  JUNCTIONS.forEach((j, i) => {
-    const d = congestionQueries[i].data as { congestion_level: number } | undefined;
-    if (d) congestionMap[j.id] = d.congestion_level;
-  });
+  if (bulkData) {
+    for (const [jId, info] of Object.entries(bulkData)) {
+      congestionMap[jId] = info.congestion_level;
+    }
+  }
 
   const swapLocations = () => { setFromId(toId); setToId(fromId); };
 

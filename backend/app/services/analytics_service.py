@@ -85,3 +85,83 @@ def congestion_trend(db: Session, junction_id: str, hours: int = 6) -> list:
         }
         for r in rows
     ]
+
+
+def bulk_congestion(db: Session) -> dict:
+    """
+    Return the latest congestion level for every junction in a single query.
+    Falls back to a heuristic from the most recent TrafficReading when no
+    stored prediction exists.
+    """
+    from sqlalchemy import desc
+
+    # ── 1. Latest stored prediction per junction (single query) ──────────
+    latest_sub = (
+        db.query(
+            CongestionPrediction.junction_id,
+            func.max(CongestionPrediction.predicted_at).label("max_ts"),
+        )
+        .group_by(CongestionPrediction.junction_id)
+        .subquery()
+    )
+    predictions = (
+        db.query(
+            CongestionPrediction.junction_id,
+            CongestionPrediction.congestion_level,
+            CongestionPrediction.predicted_speed,
+            CongestionPrediction.confidence,
+        )
+        .join(
+            latest_sub,
+            (CongestionPrediction.junction_id == latest_sub.c.junction_id)
+            & (CongestionPrediction.predicted_at == latest_sub.c.max_ts),
+        )
+        .all()
+    )
+
+    result: dict[str, dict] = {}
+    for row in predictions:
+        result[row.junction_id] = {
+            "junction_id": row.junction_id,
+            "congestion_level": round(float(row.congestion_level), 3),
+            "predicted_speed": round(float(row.predicted_speed), 1) if row.predicted_speed else None,
+            "confidence": round(float(row.confidence), 2) if row.confidence else None,
+        }
+
+    # ── 2. Fallback: junctions that have readings but no prediction yet ──
+    reading_sub = (
+        db.query(
+            TrafficReading.junction_id,
+            func.max(TrafficReading.timestamp).label("max_ts"),
+        )
+        .group_by(TrafficReading.junction_id)
+        .subquery()
+    )
+    latest_readings = (
+        db.query(
+            TrafficReading.junction_id,
+            TrafficReading.speed_kmh,
+            TrafficReading.vehicle_density,
+        )
+        .join(
+            reading_sub,
+            (TrafficReading.junction_id == reading_sub.c.junction_id)
+            & (TrafficReading.timestamp == reading_sub.c.max_ts),
+        )
+        .all()
+    )
+
+    for row in latest_readings:
+        if row.junction_id in result:
+            continue  # already have a prediction
+        speed_score = max(0.0, 1.0 - (row.speed_kmh / 80.0))
+        density_score = min(row.vehicle_density / 200.0, 1.0)
+        level = round(min(max((speed_score * 0.5) + (density_score * 0.35), 0.0), 1.0), 3)
+        result[row.junction_id] = {
+            "junction_id": row.junction_id,
+            "congestion_level": level,
+            "predicted_speed": None,
+            "confidence": 0.4,  # low confidence — heuristic fallback
+        }
+
+    return result

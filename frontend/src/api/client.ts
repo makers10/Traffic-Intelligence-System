@@ -17,6 +17,9 @@ export const fetchPeakHours = (junctionId: string) =>
 export const fetchFusedPredict = (junctionId: string, horizon = 30) =>
   api.post(`/analytics/${junctionId}/fused-predict`, null, { params: { horizon_minutes: horizon } }).then(r => r.data);
 
+export const fetchBulkCongestion = (): Promise<Record<string, { junction_id: string; congestion_level: number; predicted_speed: number | null; confidence: number | null }>> =>
+  api.get("/analytics/bulk-congestion").then(r => r.data);
+
 export const fetchWeather = (junctionId: string, lat: number, lon: number) =>
   api.post("/weather", { junction_id: junctionId, lat, lon }).then(r => r.data);
 

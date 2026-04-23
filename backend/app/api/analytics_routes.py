@@ -6,6 +6,12 @@ from app.services import analytics_service, fusion_service
 router = APIRouter(prefix="/api/v1/analytics", tags=["analytics"])
 
 
+@router.get("/bulk-congestion")
+def bulk_congestion(db: Session = Depends(get_db)):
+    """Return the latest congestion level for every known junction in one response."""
+    return analytics_service.bulk_congestion(db)
+
+
 @router.get("/{junction_id}/summary")
 def junction_summary(
     junction_id: str,
