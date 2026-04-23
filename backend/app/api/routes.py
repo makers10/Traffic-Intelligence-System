@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 from typing import List, Optional
 
@@ -9,6 +9,7 @@ from app.schemas.traffic import (
     AccidentAlertOut,
 )
 from app.services import traffic_service
+from app.middleware.auth import Role, require_role
 
 router = APIRouter(prefix="/api/v1", tags=["traffic"])
 
@@ -47,8 +48,13 @@ def get_alerts(
 
 
 @router.patch("/alerts/{alert_id}/resolve", response_model=AccidentAlertOut)
-def resolve_alert(alert_id: int, db: Session = Depends(get_db)):
-    """Mark an accident alert as resolved."""
+def resolve_alert(alert_id: int, request: Request, db: Session = Depends(get_db)):
+    """Mark an accident alert as resolved.
+
+    Requires the 'operator' role — sensors cannot resolve alerts.
+    """
+    require_role(request, Role.OPERATOR)
+
     from app.models.traffic import AccidentAlert
     from datetime import datetime
     alert = db.query(AccidentAlert).filter(AccidentAlert.id == alert_id).first()

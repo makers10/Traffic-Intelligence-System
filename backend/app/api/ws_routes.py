@@ -1,12 +1,16 @@
 """
 WebSocket endpoint — pushes live traffic updates to connected clients.
 Clients subscribe to a junction_id and receive updates every 10 seconds.
+
+Authentication: clients must provide a valid api_key query parameter
+on the handshake, e.g.  ws://host/ws/J001?api_key=<key>
 """
 import asyncio
 import json
 from datetime import datetime
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from app.db import db_session
+from app.middleware.auth import authenticate_ws
 from app.services.fusion_service import fused_prediction
 from app.services.traffic_service import get_active_alerts
 
@@ -30,11 +34,15 @@ async def _broadcast(junction_id: str, payload: dict):
 async def traffic_ws(junction_id: str, websocket: WebSocket):
     """Push live traffic updates every 10 seconds.
 
+    Authenticates on handshake — rejects unauthenticated clients with
+    WS 1008 (Policy Violation) before accepting the connection.
+
     Each update cycle creates a short-lived DB session instead of
     holding a single session open for the lifetime of the connection.
-    This avoids stale connections, detached instances, and connection
-    pool exhaustion.
     """
+    # Authenticate BEFORE accepting — invalid key = immediate rejection
+    role = authenticate_ws(websocket)
+
     await websocket.accept()
     _connections.setdefault(junction_id, set()).add(websocket)
     try:

@@ -1,14 +1,16 @@
-from fastapi import APIRouter, Depends, BackgroundTasks
+from fastapi import APIRouter, Depends, BackgroundTasks, Request
 from sqlalchemy.orm import Session
 from app.db import get_db, db_session
 from app.ml.trainer import train_junction_model, train_all_junctions
+from app.middleware.auth import Role, require_role
 
 router = APIRouter(prefix="/api/v1/ml", tags=["ml"])
 
 
 @router.post("/train/{junction_id}")
-def train_model(junction_id: str, days: int = 30, db: Session = Depends(get_db)):
-    """Trigger model training for a specific junction."""
+def train_model(junction_id: str, request: Request, days: int = 30, db: Session = Depends(get_db)):
+    """Trigger model training for a specific junction. Requires operator role."""
+    require_role(request, Role.OPERATOR)
     return train_junction_model(db, junction_id, days)
 
 
@@ -24,7 +26,8 @@ def _train_all_background(days: int):
 
 
 @router.post("/train-all")
-def train_all(days: int = 30, background_tasks: BackgroundTasks = BackgroundTasks()):
-    """Trigger training for all junctions in the background."""
+def train_all(request: Request, days: int = 30, background_tasks: BackgroundTasks = BackgroundTasks()):
+    """Trigger training for all junctions in the background. Requires operator role."""
+    require_role(request, Role.OPERATOR)
     background_tasks.add_task(_train_all_background, days)
     return {"status": "training started", "days": days}

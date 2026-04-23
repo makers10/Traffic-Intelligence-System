@@ -25,12 +25,18 @@ def ingest_reading(db: Session, data: TrafficReadingCreate) -> TrafficReading:
 
 
 def _get_baseline(db: Session, junction_id: str) -> Optional[dict]:
-    """Rolling average of last 30 minutes for a junction."""
+    """Rolling average AND stddev of last 30 minutes for a junction.
+
+    Returns mean and standard deviation so the accident detector can
+    use z-score analysis instead of brittle percentage thresholds.
+    """
     since = datetime.utcnow() - timedelta(minutes=BASELINE_WINDOW_MINUTES)
     result = db.query(
         func.avg(TrafficReading.speed_kmh).label("avg_speed"),
         func.avg(TrafficReading.vehicle_density).label("avg_density"),
         func.count(TrafficReading.id).label("count"),
+        func.stddev_pop(TrafficReading.speed_kmh).label("stddev_speed"),
+        func.stddev_pop(TrafficReading.vehicle_density).label("stddev_density"),
     ).filter(
         TrafficReading.junction_id == junction_id,
         TrafficReading.timestamp >= since,
@@ -38,7 +44,12 @@ def _get_baseline(db: Session, junction_id: str) -> Optional[dict]:
 
     if not result or result.count < BASELINE_MIN_READINGS:
         return None
-    return {"speed": float(result.avg_speed), "density": float(result.avg_density)}
+    return {
+        "speed": float(result.avg_speed),
+        "density": float(result.avg_density),
+        "stddev_speed": float(result.stddev_speed or 0),
+        "stddev_density": float(result.stddev_density or 0),
+    }
 
 
 def _check_accident(db: Session, reading: TrafficReading):
@@ -52,6 +63,8 @@ def _check_accident(db: Session, reading: TrafficReading):
         current_density=reading.vehicle_density,
         baseline_density=int(baseline["density"]),
         occupancy_pct=reading.occupancy_pct,
+        speed_stddev=baseline["stddev_speed"],
+        density_stddev=baseline["stddev_density"],
     )
 
     if alert:
@@ -62,6 +75,7 @@ def _check_accident(db: Session, reading: TrafficReading):
             density_spike_pct=alert["density_spike_pct"],
         ))
         db.commit()
+
 
 
 def predict_congestion(db: Session, junction_id: str, horizon_minutes: int) -> dict:
