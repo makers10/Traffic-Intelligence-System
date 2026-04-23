@@ -6,9 +6,31 @@ from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.preprocessing import StandardScaler
 import pickle
 import os
+import tempfile
+import threading
+from functools import lru_cache
 
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "saved_models")
 os.makedirs(MODEL_PATH, exist_ok=True)
+
+# ── Canonical feature order ──────────────────────────────────────────────────
+# This tuple is the SINGLE SOURCE OF TRUTH for feature alignment between
+# training and inference.  Adding, removing, or reordering a feature must
+# be done HERE — both build_feature_vector() and any future transformers
+# read from this list.
+FEATURE_COLUMNS = (
+    "speed_kmh",
+    "vehicle_density",
+    "occupancy_pct",
+    "hour_sin",
+    "hour_cos",
+    "dow_sin",
+    "dow_cos",
+    "is_weekend",
+    "is_peak",
+    "weather_impact",
+    "visibility_norm",
+)
 
 
 def _congestion_label(level: float) -> str:
@@ -55,20 +77,61 @@ def build_feature_vector(
     visibility_m: Optional[float],
     forecast_dt: datetime,
 ) -> np.ndarray:
-    """Assemble all features into a single vector for inference."""
-    feats = {}
+    """Assemble all features into a single vector for inference.
+
+    Feature order is determined by FEATURE_COLUMNS — NOT by dict
+    insertion order — so adding or reordering helper functions can
+    never silently corrupt the vector.
+    """
+    feats: dict[str, float] = {}
     feats["speed_kmh"] = speed_kmh
-    feats["vehicle_density"] = vehicle_density
+    feats["vehicle_density"] = float(vehicle_density)
     feats["occupancy_pct"] = occupancy_pct or 0.0
     feats.update(_extract_time_features(forecast_dt))
     feats.update(_weather_features(weather_condition, visibility_m))
-    return np.array(list(feats.values())).reshape(1, -1)
+    # Build array in canonical column order
+    return np.array([feats[col] for col in FEATURE_COLUMNS]).reshape(1, -1)
+
+
+# ── Model cache ──────────────────────────────────────────────────────────────
+# Thread-safe LRU cache: models are loaded from disk ONCE per junction and
+# reused across all subsequent requests until explicitly invalidated.
+_cache_lock = threading.Lock()
+
+
+@lru_cache(maxsize=128)
+def _load_model(junction_id: str, _version: int = 0):
+    """Load a model from disk.  The `_version` param is a cache-buster
+    incremented after training so stale entries are never served."""
+    path = os.path.join(MODEL_PATH, f"{junction_id}_model.pkl")
+    if os.path.exists(path):
+        with open(path, "rb") as f:
+            return pickle.load(f)
+    return None
+
+
+# Monotonic version counter per junction — bumped after each train/save
+_model_versions: dict[str, int] = {}
+
+
+def _get_version(junction_id: str) -> int:
+    return _model_versions.get(junction_id, 0)
+
+
+def _bump_version(junction_id: str) -> int:
+    with _cache_lock:
+        v = _model_versions.get(junction_id, 0) + 1
+        _model_versions[junction_id] = v
+    return v
 
 
 class TrafficPredictor:
     """
     Wraps a GradientBoostingRegressor to predict congestion level (0-1).
     Falls back to a heuristic model when no trained model exists.
+
+    Models are loaded via a module-level LRU cache so repeated
+    instantiations for the same junction_id do NOT hit the filesystem.
     """
 
     def __init__(self, junction_id: str):
@@ -81,16 +144,31 @@ class TrafficPredictor:
         return os.path.join(MODEL_PATH, f"{self.junction_id}_model.pkl")
 
     def _load(self):
-        path = self._model_file()
-        if os.path.exists(path):
-            with open(path, "rb") as f:
-                saved = pickle.load(f)
-                self.model = saved["model"]
-                self.scaler = saved["scaler"]
+        version = _get_version(self.junction_id)
+        saved = _load_model(self.junction_id, version)
+        if saved is not None:
+            self.model = saved["model"]
+            self.scaler = saved["scaler"]
 
     def save(self):
-        with open(self._model_file(), "wb") as f:
-            pickle.dump({"model": self.model, "scaler": self.scaler}, f)
+        """Atomically write model to disk and invalidate the cache."""
+        payload = {"model": self.model, "scaler": self.scaler}
+        # Atomic write: write to temp file then replace to avoid corruption
+        # if the process crashes mid-write.
+        fd, tmp_path = tempfile.mkstemp(dir=MODEL_PATH, suffix=".pkl.tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                pickle.dump(payload, f)
+            os.replace(tmp_path, self._model_file())
+        except BaseException:
+            # Clean up temp file on failure
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+        # Bump version so the LRU cache returns the fresh model next time
+        _bump_version(self.junction_id)
 
     def train(self, readings: List[dict]):
         """
